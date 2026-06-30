@@ -1,2 +1,2 @@
-aiogram
-flask
+aiogram==3.13.0
+Flask==3.0.3
