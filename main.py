@@ -18,7 +18,8 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 # ... (သင့်ရဲ့ ကျန်တဲ့ Game Logic Code များ)
 
-(Best Practice#TT State Storage
+
+# Game State Storage
 games = {}
 
 def create_board_keyboard(board, game_id):
