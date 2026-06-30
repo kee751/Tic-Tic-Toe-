@@ -49,9 +49,9 @@ user_cooldowns: Dict[int, float] = {}
 DB_FILE = "database.db"
 
 def init_db() -> None:
-    """Database နှင့် Table များကို စတင်တည်ဆောက်ခြင်း။"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        # ... existing users table ...
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
@@ -63,6 +63,14 @@ def init_db() -> None:
                 games_played INTEGER DEFAULT 0,
                 win_streak INTEGER DEFAULT 0,
                 coins INTEGER DEFAULT 100,
+                last_seen TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                chat_id TEXT PRIMARY KEY,
+                title TEXT,
+                type TEXT,
                 last_seen TEXT
             )
         """)
@@ -142,6 +150,19 @@ async def db_get_all_users() -> List[str]:
             cursor.execute("SELECT user_id FROM users")
             return [row[0] for row in cursor.fetchall()]
 
+    async with db_lock:
+        return await asyncio.to_thread(_run)
+        
+async def db_get_all_chats() -> List[str]:
+    """User ID နှင့် Group Chat ID အားလုံးကို ပြန်ပေးမည်"""
+    def _run():
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM users")
+            user_ids = [row[0] for row in cursor.fetchall()]
+            cursor.execute("SELECT chat_id FROM groups")
+            group_ids = [row[0] for row in cursor.fetchall()]
+            return user_ids + group_ids
     async with db_lock:
         return await asyncio.to_thread(_run)
 
@@ -302,6 +323,26 @@ async def cmd_start(message: types.Message):
     
     await message.answer(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
 
+@dp.message(F.chat.type.in_({"group", "supergroup"}))
+async def register_group(message: types.Message):
+    chat_id = str(message.chat.id)
+    title = message.chat.title or "Unknown"
+    chat_type = message.chat.type
+    async with db_lock:
+        def _run():
+            with sqlite3.connect(DB_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO groups (chat_id, title, type, last_seen)
+                    VALUES (?, ?, ?, datetime('now'))
+                    ON CONFLICT(chat_id) DO UPDATE SET
+                        title = excluded.title,
+                        type = excluded.type,
+                        last_seen = datetime('now')
+                """, (chat_id, title, chat_type))
+                conn.commit()
+        await asyncio.to_thread(_run)
+
 @dp.message(Command("leaderboard"))
 async def cmd_leaderboard(message: types.Message):
     data = await db_get_leaderboard()
@@ -322,24 +363,28 @@ async def cmd_broadcast(message: types.Message):
         await message.reply("ကျေးဇူးပြု၍ ပို့လိုသော စာသားကို ရိုက်ထည့်ပါ။\nဥပမာ - `/broadcast မင်္ဂလာပါ အားလုံးပဲ`", parse_mode="Markdown")
         return
 
-    users = await db_get_all_users()
+    chats = await db_get_all_chats()   # User + Group IDs
     success_count = 0
     fail_count = 0
     
-    await message.reply(f"🚀 User အယောက် ({len(users)}) ဆီသို့ Broadcast စတင်ပို့ဆောင်နေပါပြီ...")
+    await message.reply(f"🚀 Chat အယောက် ({len(chats)}) ဆီသို့ Broadcast စတင်ပို့ဆောင်နေပါပြီ...")
 
-    for user_id in users:
+    for chat_id in chats:
         try:
-            await bot.send_message(chat_id=user_id, text=f"📢 **Admin Message:**\n\n{broadcast_msg}", parse_mode="Markdown")
+            await bot.send_message(
+                chat_id=int(chat_id),
+                text=f"📢 **Admin Message:**\n\n{escape_md(broadcast_msg)}",
+                parse_mode="Markdown"
+            )
             success_count += 1
-            await asyncio.sleep(0.05) # Telegram spam limit မဖြစ်အောင် စောင့်ပေးခြင်း
+            await asyncio.sleep(0.05)  # Rate limit ကာကွယ်ရန်
         except TelegramAPIError:
             fail_count += 1
         except Exception as e:
-            logging.error(f"Broadcast error to {user_id}: {e}")
+            logging.error(f"Broadcast error to {chat_id}: {e}")
             fail_count += 1
             
-    await message.reply(f"✅ **Broadcast ပြီးဆုံးပါပြီ။**\n\nအောင်မြင်: {success_count} ဦး\nမအောင်မြင်: {fail_count} ဦး (Bot ကို block ထားသူများ)")
+    await message.reply(f"✅ **Broadcast ပြီးဆုံးပါပြီ။**\n\nအောင်မြင်: {success_count} ခု\nမအောင်မြင်: {fail_count} ခု (Bot ကို block ထားသူများ သို့မဟုတ် Group မှ ဖယ်ရှားထားသူများ)")
 
 # ==========================================
 #            CALLBACK HANDLERS
