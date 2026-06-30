@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent
 )
+from aiogram.exceptions import TelegramAPIError
 
 # --- Logging Configurations ---
 logging.basicConfig(
@@ -123,6 +124,27 @@ async def db_get_profile(user_id: int) -> Optional[Dict[str, Any]]:
     async with db_lock:
         return await asyncio.to_thread(_run)
 
+async def db_get_all_users() -> List[str]:
+    """Broadcast အတွက် User အားလုံး၏ ID များကို ရယူခြင်း"""
+    def _run():
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM users")
+            return [row[0] for row in cursor.fetchall()]
+
+    async with db_lock:
+        return await asyncio.to_thread(_run)
+
+async def db_get_leaderboard() -> List[tuple]:
+    """Leaderboard အတွက် အချက်အလက်ယူခြင်း"""
+    def _run():
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT first_name, wins FROM users ORDER BY wins DESC LIMIT 5")
+            return cursor.fetchall()
+    async with db_lock:
+        return await asyncio.to_thread(_run)
+
 # --- Utilities & Security Escaping ---
 def escape_md(text: str) -> str:
     if not text:
@@ -164,12 +186,22 @@ def get_turn_text(game: Dict[str, Any]) -> str:
     c_theme = game["theme"][current_piece]
     p1 = game["creator"]
     p2 = game["opponent"]
+    
+    # ယာယီစောင့်နေသော အခြေအနေ
+    if p2["id"] == -1:
+        return (
+            f"⚔️ **Tic-Tac-Toe 4x4 (PvP Mode)** ⚔️\n\n"
+            f"👤 {escape_md(p1['name'])} ({game['theme'][p1['piece']]})\n"
+            f"⏳ ကစားဖော်အား စောင့်ဆိုင်းနေပါသည်...\n\n"
+            f"အောက်ပါ 'Join Game' ကိုနှိပ်ပြီး ဝင်ရောက်ကစားပါ။"
+        )
+        
     current_player_name = p1["name"] if p1["piece"] == current_piece else p2["name"]
     
     return (
         f"⚔️ **Tic-Tac-Toe 4x4** ⚔️\n\n"
         f"👤 {escape_md(p1['name'])} ({game['theme'][p1['piece']]})\n"
-        f"🤖 {escape_md(p2['name'])} ({game['theme'][p2['piece']]})\n\n"
+        f"🤖/👤 {escape_md(p2['name'])} ({game['theme'][p2['piece']]})\n\n"
         f"▶️ **အလှည့်:** {escape_md(current_player_name)} ({c_theme})"
     )
 
@@ -188,16 +220,12 @@ def create_board_keyboard(board: list, game_id: str, theme: Dict[str, str]) -> I
 
 def check_winner(board: list, player: str) -> bool:
     for i in range(4):
-        # Rows and Columns
         if all(board[i][j] == player for j in range(4)) or \
            all(board[j][i] == player for j in range(4)):
             return True
-            
-    # Diagonals
     if all(board[i][i] == player for i in range(4)) or \
        all(board[i][3-i] == player for i in range(4)):
         return True
-        
     return False
 
 def check_draw(board: list) -> bool:
@@ -209,7 +237,6 @@ def check_draw(board: list) -> bool:
 
 # --- Smart 4x4 Defensive Bot AI Logic ---
 def get_ai_move(board: list) -> tuple:
-    # 1. AI Win Check
     for r in range(4):
         for c in range(4):
             if board[r][c] == '':
@@ -219,7 +246,6 @@ def get_ai_move(board: list) -> tuple:
                     return r, c
                 board[r][c] = ''
                 
-    # 2. Block Player Win
     for r in range(4):
         for c in range(4):
             if board[r][c] == '':
@@ -229,18 +255,15 @@ def get_ai_move(board: list) -> tuple:
                     return r, c
                 board[r][c] = ''
                 
-    # 3. Take Center Spots
     center_spots = [(1,1), (1,2), (2,1), (2,2)]
     for r, c in center_spots:
         if board[r][c] == '': 
             return r, c
             
-    # 4. Take First Available
     for r in range(4):
         for c in range(4):
             if board[r][c] == '': 
                 return r, c
-                
     return 0, 0
 
 # ==========================================
@@ -254,15 +277,56 @@ async def cmd_start(message: types.Message):
     welcome_text = (
         f"👋 မင်္ဂလာပါ {escape_md(message.from_user.first_name)}!\n\n"
         f"🎮 4x4 Tic-Tac-Toe ဂိမ်း Bot မှ ကြိုဆိုပါတယ်။\n"
-        f"အောက်ပါ ခလုတ်ကိုနှိပ်ပြီး AI နဲ့ ယှဉ်ပြိုင်ကစားနိုင်ပါပြီ။"
+        f"အောက်ပါ ခလုတ်ကိုနှိပ်ပြီး AI နဲ့ဖြစ်စေ၊ သူငယ်ချင်းနဲ့ဖြစ်စေ ယှဉ်ပြိုင်ကစားနိုင်ပါပြီ။"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎮 Play with AI (ကစားမည်)", callback_data="play_ai")],
+        [InlineKeyboardButton(text="🎮 Play with AI (AI ဖြင့်ဆော့မည်)", callback_data="play_ai")],
+        [InlineKeyboardButton(text="👥 Play with Friend (သူငယ်ချင်းနှင့်ဆော့မည်)", callback_data="play_pvp")],
         [InlineKeyboardButton(text="👤 My Profile (ပရိုဖိုင်)", callback_data="profile")]
     ])
     
     await message.answer(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.message(Command("leaderboard"))
+async def cmd_leaderboard(message: types.Message):
+    data = await db_get_leaderboard()
+    text = "🏆 **Top 5 Players (Leaderboard)** 🏆\n\n"
+    for i, (name, wins) in enumerate(data, 1):
+        text += f"{i}. {escape_md(name)} - {wins} wins\n"
+    await message.answer(text, parse_mode="Markdown")
+
+# --- Broadcast Command (Admin Only) ---
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("ဤ command ကို Admin သာ အသုံးပြုနိုင်ပါသည်။")
+        return
+        
+    broadcast_msg = message.text.replace("/broadcast", "").strip()
+    if not broadcast_msg:
+        await message.reply("ကျေးဇူးပြု၍ ပို့လိုသော စာသားကို ရိုက်ထည့်ပါ။\nဥပမာ - `/broadcast မင်္ဂလာပါ အားလုံးပဲ`", parse_mode="Markdown")
+        return
+
+    users = await db_get_all_users()
+    success_count = 0
+    fail_count = 0
+    
+    await message.reply(f"🚀 User အယောက် ({len(users)}) ဆီသို့ Broadcast စတင်ပို့ဆောင်နေပါပြီ...")
+
+    for user_id in users:
+        try:
+            await bot.send_message(chat_id=user_id, text=f"📢 **Admin Message:**\n\n{broadcast_msg}", parse_mode="Markdown")
+            success_count += 1
+            await asyncio.sleep(0.05) # Telegram spam limit မဖြစ်အောင် စောင့်ပေးခြင်း
+        except TelegramAPIError:
+            fail_count += 1
+            
+    await message.reply(f"✅ **Broadcast ပြီးဆုံးပါပြီ။**\n\nအောင်မြင်: {success_count} ဦး\nမအောင်မြင်: {fail_count} ဦး (Bot ကို block ထားသူများ)")
+
+# ==========================================
+#            CALLBACK HANDLERS
+# ==========================================
 
 @dp.callback_query(F.data == "profile")
 async def profile_callback(callback: types.CallbackQuery):
@@ -306,6 +370,64 @@ async def start_ai_game(callback: types.CallbackQuery):
     
     await safe_edit(callback, text, keyboard)
 
+@dp.callback_query(F.data == "play_pvp")
+async def start_pvp_game(callback: types.CallbackQuery):
+    game_id = secrets.token_hex(4)
+    board = [['' for _ in range(4)] for _ in range(4)]
+    
+    async with game_lock:
+        games[game_id] = {
+            "board": board,
+            "turn": "X",
+            "theme": {"X": "❌", "O": "⭕"},
+            "creator": {"id": callback.from_user.id, "name": callback.from_user.first_name, "piece": "X"},
+            "opponent": {"id": -1, "name": "Waiting...", "piece": "O"}, # -1 is Waiting for Real Player
+            "status": "waiting"
+        }
+    
+    game = games[game_id]
+    text = get_turn_text(game)
+    
+    # သူငယ်ချင်း ဝင်Join ရန်ခလုတ်
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎮 Join Game (ဝင်ကစားမည်)", callback_data=f"join_{game_id}")]
+    ])
+    
+    await safe_edit(callback, text, keyboard)
+
+@dp.callback_query(F.data.startswith("join_"))
+async def join_pvp_game(callback: types.CallbackQuery):
+    _, game_id = callback.data.split("_")
+    user_id = callback.from_user.id
+    
+    async with game_lock:
+        if game_id not in games:
+            await callback.answer("ဒီပွဲစဉ် ပျက်သွားပါပြီ။", show_alert=True)
+            return
+            
+        game = games[game_id]
+        
+        if game["status"] != "waiting":
+            await callback.answer("ဒီပွဲမှာ လူပြည့်သွားပါပြီ။", show_alert=True)
+            return
+            
+        if game["creator"]["id"] == user_id:
+            await callback.answer("သင်က ပွဲဖန်တီးသူ ဖြစ်နေပါသည်။ အခြားသူကို စောင့်ပါ။", show_alert=True)
+            return
+            
+        # အခြား Player ဝင်ရောက်လာခြင်း
+        game["opponent"] = {"id": user_id, "name": callback.from_user.first_name, "piece": "O"}
+        game["status"] = "playing"
+        
+        # User အသစ်ကိုပါ Database ထဲမှတ်ပေးမည်
+        await db_register_user(callback.from_user.id, callback.from_user.username, callback.from_user.first_name)
+        
+        text = get_turn_text(game)
+        keyboard = create_board_keyboard(game["board"], game_id, game["theme"])
+        
+    await safe_edit(callback, text, keyboard)
+    await callback.answer("ဂိမ်းထဲသို့ အောင်မြင်စွာ ဝင်ရောက်ပြီးပါပြီ။")
+
 # ==========================================
 #            GAME MOVE HANDLER
 # ==========================================
@@ -323,13 +445,19 @@ async def move_callback(callback: types.CallbackQuery):
         game = games[game_id]
         user_id = callback.from_user.id
         
-        # Check if it's player's turn
-        if game["creator"]["id"] != user_id:
-            await callback.answer("သင်က ဒီပွဲကို ကစားနေသူ မဟုတ်ပါ။", show_alert=True)
+        if game["status"] == "waiting":
+            await callback.answer("ကစားဖော် မရှိသေးပါ။ တစ်ယောက်ယောက် ဝင်လာသည်အထိ စောင့်ပါ။", show_alert=True)
             return
-            
-        if game["turn"] != game["creator"]["piece"]:
-            await callback.answer("သင့်အလှည့် မရောက်သေးပါ။", show_alert=True)
+
+        current_piece = game["turn"]
+        current_player = game["creator"] if game["creator"]["piece"] == current_piece else game["opponent"]
+        
+        # အလှည့်စစ်ဆေးခြင်း
+        if current_player["id"] != user_id:
+            if user_id in [game["creator"]["id"], game["opponent"]["id"]]:
+                await callback.answer("သင့်အလှည့် မရောက်သေးပါ။", show_alert=True)
+            else:
+                await callback.answer("သင်က ဒီပွဲကို ကစားနေသူ မဟုတ်ပါ။", show_alert=True)
             return
             
         board = game["board"]
@@ -338,13 +466,19 @@ async def move_callback(callback: types.CallbackQuery):
             await callback.answer("ဒီနေရာမှာ ချပြီးသားပါ။ တခြားနေရာ ရွေးပါ။", show_alert=True)
             return
             
-        # --- Player Move ---
-        board[r][c] = game["creator"]["piece"]
+        # --- Apply Player Move ---
+        board[r][c] = current_piece
         
-        # Check Player Win
-        if check_winner(board, game["creator"]["piece"]):
-            await db_update_stats(user_id, "win")
-            text = f"🏆 **ဂုဏ်ယူပါတယ်! သင် အနိုင်ရသွားပါပြီ!**\n\n👤 {escape_md(game['creator']['name'])} နိုင်ပါသည်။"
+        # Check Win
+        if check_winner(board, current_piece):
+            winner = current_player
+            loser = game["opponent"] if current_player == game["creator"] else game["creator"]
+            
+            await db_update_stats(winner["id"], "win")
+            if loser["id"] != 0: # AI မဟုတ်ရင် ရှုံးတဲ့သူကို မှတ်မယ်
+                await db_update_stats(loser["id"], "loss")
+                
+            text = f"🏆 **ဂုဏ်ယူပါတယ်! ပွဲပြီးဆုံးသွားပါပြီ!**\n\n👤 {escape_md(winner['name'])} မှ အနိုင်ရရှိသွားပါသည်။"
             keyboard = create_board_keyboard(board, game_id, game["theme"])
             await safe_edit(callback, text, keyboard)
             del games[game_id]
@@ -352,89 +486,47 @@ async def move_callback(callback: types.CallbackQuery):
             
         # Check Draw
         if check_draw(board):
-            await db_update_stats(user_id, "draw")
+            await db_update_stats(game["creator"]["id"], "draw")
+            if game["opponent"]["id"] != 0:
+                await db_update_stats(game["opponent"]["id"], "draw")
+                
             text = f"🤝 **သရေကျသွားပါသည်!**\n\nနောက်တစ်ပွဲ ပြန်ကြိုးစားကြည့်ပါ။"
             keyboard = create_board_keyboard(board, game_id, game["theme"])
             await safe_edit(callback, text, keyboard)
             del games[game_id]
             return
             
-        # --- AI Move ---
-        game["turn"] = game["opponent"]["piece"]
-        # Edit message to show AI is thinking
-        await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"]))
+        # --- Move Next Turn ---
+        next_piece = "O" if current_piece == "X" else "X"
+        game["turn"] = next_piece
         
-        # Small delay for realism
-        await asyncio.sleep(0.5)
-        
-        ai_r, ai_c = get_ai_move(board)
-        board[ai_r][ai_c] = game["opponent"]["piece"]
-        
-        # Check AI Win
-        if check_winner(board, game["opponent"]["piece"]):
-            await db_update_stats(user_id, "loss")
-            text = f"💀 **ရှုံးသွားပါပြီ!**\n\n🤖 AI Bot မှ အနိုင်ရရှိသွားပါသည်။"
-            keyboard = create_board_keyboard(board, game_id, game["theme"])
-            await safe_edit(callback, text, keyboard)
-            del games[game_id]
-            return
+        # AI Mode ဖြစ်ရင် AI အလှည့်ကို ဆက်လုပ်မယ်
+        if game["opponent"]["id"] == 0:
+            await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"]))
+            await asyncio.sleep(0.5) # AI တွေးနေသယောင် Delay
             
-        # Check Draw after AI move
-        if check_draw(board):
-            await db_update_stats(user_id, "draw")
-            text = f"🤝 **သရေကျသွားပါသည်!**\n\nနောက်တစ်ပွဲ ပြန်ကြိုးစားကြည့်ပါ။"
-            keyboard = create_board_keyboard(board, game_id, game["theme"])
-            await safe_edit(callback, text, keyboard)
-            del games[game_id]
-            return
+            ai_r, ai_c = get_ai_move(board)
+            board[ai_r][ai_c] = game["opponent"]["piece"]
             
-        # Pass turn back to player
-        game["turn"] = game["creator"]["piece"]
-        await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"]))
-
-@dp.callback_query(F.data.startswith("leave_"))
-async def leave_callback(callback: types.CallbackQuery) -> None:
-    parts = callback.data.split("_", 1)
-    if len(parts) < 2: 
-        return
-    game_id = parts[1]
-
-    async with game_lock:
-        if game_id not in games:
-            return
-        game = games[game_id]
-
-    uid = callback.from_user.id
-    if uid not in [game["creator"]["id"], game["opponent"]["id"]]:
-        await callback.answer("သင်က ပွဲစဉ်ထဲက လူမဟုတ်ပါ။", show_alert=True)
-        return
-
-    loser = game["creator"] if game["creator"]["id"] == uid else game["opponent"]
-    winner = game["opponent"] if game["creator"]["id"] == uid else game["creator"]
-
-    if game["opponent"]["id"] != 0: # 0 means AI/Bot ID usually
-        await db_update_stats(winner["id"], "win")
-        await db_update_stats(loser["id"], "loss")
-    else:
-        # User lost to AI by leaving
-        await db_update_stats(loser["id"], "loss")
-
-    await safe_edit(
-        callback, 
-        f"🏳️ **Leave Game!**\n\n👤 {escape_md(loser['name'])} သည် ပွဲအတွင်းမှ ထွက်ခွာသွားသဖြင့် အလိုအလျောက် အရှုံးပေးလိုက်ပါသည်။\n\n🏆 အနိုင်ရရှိသူ: {escape_md(winner['name'])}", 
-        None
-    )
-
-    async with game_lock:
-        if game_id in games:
-            del games[game_id]
-
-# --- Main Entry Point ---
-async def main() -> None:
-    print("Bot is Starting...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    t: Thread = Thread(target=run_flask)
-    t.start()
-    asyncio.run(main())
+            if check_winner(board, game["opponent"]["piece"]):
+                await db_update_stats(game["creator"]["id"], "loss")
+                text = f"💀 **ရှုံးသွားပါပြီ!**\n\n🤖 AI Bot မှ အနိုင်ရရှိသွားပါသည်။"
+                keyboard = create_board_keyboard(board, game_id, game["theme"])
+                await safe_edit(callback, text, keyboard)
+                del games[game_id]
+                return
+                
+            if check_draw(board):
+                await db_update_stats(game["creator"]["id"], "draw")
+                text = f"🤝 **သရေကျသွားပါသည်!**\n\nနောက်တစ်ပွဲ ပြန်ကြိုးစားကြည့်ပါ။"
+                keyboard = create_board_keyboard(board, game_id, game["theme"])
+                await safe_edit(callback, text, keyboard)
+                del games[game_id]
+                return
+                
+            game["turn"] = game["creator"]["piece"] # လူအလှည့် ပြန်ပေး
+            await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"]))
+            
+        else:
+            # PvP Mode ဖြစ်ရင် အခြားလူအလှည့်ကို ပြောင်းပေးရုံသာ
+            await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"]))
