@@ -140,3 +140,17 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     
+# --- Web Server အပိုင်း (ဖိုင်ရဲ့ အောက်ဆုံးမှာ ထားပါ) ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=10000)
+
+# Web Server ကို အလုပ်လုပ်စေရန်
+t = Thread(target=run)
+t.start()
+    
