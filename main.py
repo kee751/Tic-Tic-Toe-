@@ -19,9 +19,22 @@ if not TOKEN:
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Game State & Broadcast Storage
+# --- [စနစ်သစ်] Database (users.txt) ဖြင့် User များကို အမြဲတမ်း မှတ်သားသည့်စနစ် ---
+def load_users():
+    if os.path.exists("users.txt"):
+        with open("users.txt", "r") as f:
+            return set(line.strip() for line in f)
+    return set()
+
+def save_user(user_id):
+    with open("users.txt", "a") as f:
+        f.write(f"{user_id}\n")
+
+# Server ပွင့်တာနဲ့ users.txt ထဲက လူစာရင်းကို အလိုလို ဖတ်ယူပါမည်
+user_ids = load_users()  
+
+# Game State Storage
 games = {}
-user_ids = set()  # Bot ကို သုံးဖူးသမျှ လူတွေရဲ့ ID ကို သိမ်းဆည်းရန် စနစ်
 
 # Flask Web Server အပိုင်း (UptimeRobot အတွက်)
 app = Flask(__name__)
@@ -75,7 +88,7 @@ def check_winner(board, player):
         return True
     return False
 
-# --- [စနစ်သစ်] Chat ထဲတွင် /end ရိုက်ပြီး ဂိမ်းပိတ်သည့် စနစ် ---
+# --- Chat ထဲတွင် /end ရိုက်ပြီး ဂိမ်းပိတ်သည့် စနစ် ---
 @dp.message(Command("end"))
 async def end_game_command(message: types.Message):
     game_id = message.chat.id
@@ -88,7 +101,6 @@ async def end_game_command(message: types.Message):
 # --- [စနစ်သစ်] Admin Broadcast (စာလှမ်းကြေညာခြင်း) စနစ် ---
 @dp.message(Command("broadcast"))
 async def broadcast_handler(message: types.Message):
-    # ⚠️ အရေးကြီး - အောက်က နံပါတ်နေရာမှာ သင့်ရဲ့ ကိုယ်ပိုင် Telegram User ID ကို အစားထိုးပါ
     ADMIN_ID = 7679480147  
     
     if message.from_user.id != ADMIN_ID:
@@ -105,16 +117,24 @@ async def broadcast_handler(message: types.Message):
     
     for uid in list(user_ids):
         try:
-            await bot.send_message(chat_id=uid, text=text_to_send)
+            await bot.send_message(chat_id=int(uid), text=text_to_send)
             success_count += 1
         except Exception:
             pass  # User က Bot ကို Block ထားရင် ကျော်သွားမည်
             
-    await message.answer(f"📢 လူပေါင်း {success_count} ယောက်ဆီကို စာလှမ်းပို့ပေးလိုက်ပါပြီဗျာ!")
+    await message.answer(
+        f"📢 **Broadcast ပို့ခြင်း အောင်မြင်ပါတယ်ဗျာ!**\n\n"
+        f"👥 စုစုပေါင်း လူ **{success_count}** ယောက်ဆီ စာသားများ ပို့ဆောင်ပေးခဲ့ပြီးပါပြီ။"
+    )
 
 @dp.message(Command("start"))
 async def start_game(message: types.Message):
-    user_ids.add(message.chat.id)  # Broadcast စနစ်အတွက် User ID ကို မှတ်သားခြင်း
+    # --- [ပြင်ဆင်ချက်] User တွေကို Database ထဲ သိမ်းမည့်အပိုင်း ---
+    user_id_str = str(message.chat.id)
+    if user_id_str not in user_ids:
+        save_user(user_id_str)      # users.txt ထဲ ရေးထည့်မည်
+        user_ids.add(user_id_str)   # RAM ထဲ မှတ်ထားမည်
+
     game_id = message.chat.id
     games[game_id] = {
         "board": [[' ' for _ in range(4)] for _ in range(4)],
@@ -156,7 +176,6 @@ async def join_game(callback: types.CallbackQuery):
     games[game_id]["opponent"] = {"id": callback.from_user.id, "name": callback.from_user.first_name, "piece": opp_piece}
     games[game_id]["status"] = "playing"
     
-    # --- [ပြင်ဆင်ချက်] ဂိမ်းစကတည်းက ဘယ်သူ့အလှည့်လဲဆိုတာ Turn Indicator စပြခြင်း ---
     text = get_turn_text(games[game_id])
     await callback.message.edit_text(text, reply_markup=create_board_keyboard(games[game_id]["board"], game_id))
 
@@ -170,12 +189,10 @@ async def handle_move(callback: types.CallbackQuery):
     game = games[game_id]
     user_id = callback.from_user.id
     
-    # ပွဲထဲမှာ မပါတဲ့ လူစိမ်းတွေ နှိပ်ရင် တားဆီးရန် စနစ်
     if user_id != game["creator"]["id"] and user_id != game["opponent"]["id"]:
         await callback.answer("သင်က ဒီပွဲမှာ ပါဝင်သူမဟုတ်ပါဘူး!")
         return
         
-    # Turn Check
     current_piece = 'X' if game["turn"] == 'X' else 'O'
     if (user_id == game["creator"]["id"] and game["creator"]["piece"] != current_piece) or \
        (user_id == game["opponent"]["id"] and game["opponent"]["piece"] != current_piece):
@@ -185,7 +202,6 @@ async def handle_move(callback: types.CallbackQuery):
     if game["board"][r][c] == ' ':
         game["board"][r][c] = current_piece
         
-        # Win Check
         if check_winner(game["board"], current_piece):
             winner = game["creator"]["name"] if game["creator"]["piece"] == current_piece else game["opponent"]["name"]
             loser = game["opponent"]["name"] if game["creator"]["piece"] == current_piece else game["creator"]["name"]
@@ -193,16 +209,13 @@ async def handle_move(callback: types.CallbackQuery):
             del games[game_id]
             return
             
-        # Draw Check
         if all(cell != ' ' for row in game["board"] for cell in row):
             await callback.message.edit_text("🤝 ဂိမ်း သရေကျသွားပါပြီ!")
             del games[game_id]
             return
 
-        # Switch Turn
         game["turn"] = 'O' if current_piece == 'X' else 'X'
         
-        # --- [ပြင်ဆင်ချက်] ခလုတ်နှိပ်ပြီးတိုင်း အလှည့်ပြစာသားကိုပါ ထည့်သွင်းပြောင်းလဲခြင်း ---
         text = get_turn_text(game)
         await callback.message.edit_text(text, reply_markup=create_board_keyboard(game["board"], game_id))
     else:
@@ -223,10 +236,7 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    # Flask Web Server ကို Polling မတိုင်ခင် နောက်ကွယ်ကနေ အရင်နှိုးထားရပါမယ်
     t = Thread(target=run)
     t.start()
     
-    # Bot ကို စတင်လည်ပတ်ခြင်း
     asyncio.run(main())
-  
