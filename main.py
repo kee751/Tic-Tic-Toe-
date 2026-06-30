@@ -1,7 +1,7 @@
-import logging
 import asyncio
-import os
-from aiogram import Bot, Dispatcher, types, F
+from threading import Thread
+from flask import Flask
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
