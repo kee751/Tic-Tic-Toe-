@@ -244,7 +244,6 @@ def create_board_keyboard(board: list, game_id: str, theme: Dict[str, str], game
         row = []
         for c in range(cols):
             symbol = board[r][c]
-            # theme ထဲမှာ မရှိရင် symbol ကိုပဲ ပြမယ်
             display_text = theme.get(symbol, symbol) if symbol != '' else "➖"
             row.append(InlineKeyboardButton(text=display_text, callback_data=f"move_{game_id}_{r}_{c}"))
         keyboard.append(row)
@@ -257,10 +256,16 @@ def create_board_keyboard(board: list, game_id: str, theme: Dict[str, str], game
         if game.get("status") == "playing":
             keyboard.append([InlineKeyboardButton(text="🏳️ Leave Game (အရှုံးပေးရန်)", callback_data=f"leave_{game_id}")])
     else:
+        # ကစားပွဲ ပြီးဆုံးသွားသည့်အခါ Play Again နှင့် Close ခလုတ်များကို ပြသခြင်း
+        play_again_btn = None
         if game["opponent"]["id"] == 0:
-            keyboard.append([InlineKeyboardButton(text="🔄 ထပ်ကစားမည် (AI နှင့်)", callback_data="play_ai")])
+            play_again_btn = InlineKeyboardButton(text="🔄 ထပ်ကစားမည် (AI နှင့်)", callback_data="play_ai")
         else:
-            keyboard.append([InlineKeyboardButton(text="🔄 ထပ်ကစားမည် (သူငယ်ချင်းနှင့်)", callback_data="play_pvp")])
+            play_again_btn = InlineKeyboardButton(text="🔄 ထပ်ကစားမည် (သူငယ်ချင်းနှင့်)", callback_data="play_pvp")
+            
+        close_btn = InlineKeyboardButton(text="❌ ပိတ်မည်", callback_data="close_message")
+        keyboard.append([play_again_btn])
+        keyboard.append([close_btn])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -326,10 +331,12 @@ async def cmd_start(message: types.Message):
         f"အောက်ပါ ခလုတ်ကိုနှိပ်ပြီး AI နဲ့ဖြစ်စေ၊ သူငယ်ချင်းနဲ့ဖြစ်စေ ယှဉ်ပြိုင်ကစားနိုင်ပါပြီ။"
     )
     
+    # "ပိတ်မည်" (Close) ခလုတ်ကို inline keyboard ထဲ သို့ ထည့်သွင်းပေးထားပါသည်
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎮 Play with AI (AI ဖြင့်ဆော့မည်)", callback_data="play_ai")],
         [InlineKeyboardButton(text="👥 Play with Friend (သူငယ်ချင်းနှင့်ဆော့မည်)", callback_data="play_pvp")],
-        [InlineKeyboardButton(text="👤 My Profile (ပရိုဖိုင်)", callback_data="profile")]
+        [InlineKeyboardButton(text="👤 My Profile (ပရိုဖိုင်)", callback_data="profile")],
+        [InlineKeyboardButton(text="❌ ပိတ်မည်", callback_data="close_message")]
     ])
     
     await message.answer(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
@@ -363,19 +370,16 @@ async def cmd_leaderboard(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 # --- Broadcast Command (Admin Only) ---
-# --- Broadcast Command (Admin Only) ---
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.reply("ဤ command ကို Admin သာ အသုံးပြုနိုင်ပါသည်။")
         return
         
-    # Reply ပြန်ပြီးမှ Broadcast လုပ်ခိုင်းမည့်စနစ် (ပုံ၊ ဗီဒီယိုပါ ပို့နိုင်ရန်)
     if not message.reply_to_message:
         await message.reply("⚠️ ကျေးဇူးပြု၍ သင် Broadcast လုပ်လိုသော စာ၊ ပုံ (သို့) ဗီဒီယိုကို **Reply** ပြန်ပြီး `/broadcast` ဟု ရိုက်ပါ။", parse_mode="Markdown")
         return
 
-    # မူလကုဒ်တွင် ရှိပြီးသား Database Function ကို အသုံးပြုခြင်း
     chats = await db_get_all_chats()   
     success_count = 0
     fail_count = 0
@@ -384,14 +388,13 @@ async def cmd_broadcast(message: types.Message):
 
     for chat_id in chats:
         try:
-            # စာသားသာမက Media များကိုပါ Copy ကူး၍ ပို့ဆောင်ပေးမည်
             await bot.copy_message(
                 chat_id=int(chat_id),
                 from_chat_id=message.chat.id,
                 message_id=message.reply_to_message.message_id
             )
             success_count += 1
-            await asyncio.sleep(0.05)  # Rate limit ကာကွယ်ရန်
+            await asyncio.sleep(0.05)
         except Exception as e:
             logging.error(f"Broadcast error to {chat_id}: {e}")
             fail_count += 1
@@ -422,7 +425,52 @@ async def profile_callback(callback: types.CallbackQuery):
         f"💰 ဒင်္ဂါးပြား: {profile['coins']}"
     )
     
-    await safe_edit(callback, text, None)
+    # Profile ပြသသည့်အခါလည်း ပိတ်ရန် Back/Close ခလုတ်ပါဝင်စေရန်
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 နောက်သို့", callback_data="back_to_menu")],
+        [InlineKeyboardButton(text="❌ ပိတ်မည်", callback_data="close_message")]
+    ])
+    
+    await safe_edit(callback, text, keyboard)
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu_callback(callback: types.CallbackQuery):
+    """
+    ပရိုဖိုင်မှ Main Menu သို့ ပြန်သွားရန် လုပ်ဆောင်ချက်
+    """
+    welcome_text = (
+        f"👋 မင်္ဂလာပါ {escape_md(callback.from_user.first_name)}!\n\n"
+        f"🎮 4x4 Tic-Tac-Toe ဂိမ်း Bot မှ ကြိုဆိုပါတယ်။\n"
+        f"အောက်ပါ ခလုတ်ကိုနှိပ်ပြီး AI နဲ့ဖြစ်စေ၊ သူငယ်ချင်းနဲ့ဖြစ်စေ ယှဉ်ပြိုင်ကစားနိုင်ပါပြီ။"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎮 Play with AI (AI ဖြင့်ဆော့မည်)", callback_data="play_ai")],
+        [InlineKeyboardButton(text="👥 Play with Friend (သူငယ်ချင်းနှင့်ဆော့မည်)", callback_data="play_pvp")],
+        [InlineKeyboardButton(text="👤 My Profile (ပရိုဖိုင်)", callback_data="profile")],
+        [InlineKeyboardButton(text="❌ ပိတ်မည်", callback_data="close_message")]
+    ])
+    
+    await safe_edit(callback, welcome_text, keyboard)
+
+@dp.callback_query(F.data == "close_message")
+async def close_message_callback(callback: types.CallbackQuery):
+    """
+    Message ကို ပိတ်ရန် (ဖျက်ရန်) လုပ်ဆောင်ချက်
+    """
+    try:
+        if callback.inline_message_id:
+            await callback.bot.edit_message_text(
+                text="❌ ကစားပွဲကို ပိတ်လိုက်ပါပြီ။", 
+                inline_message_id=callback.inline_message_id,
+                reply_markup=None
+            )
+        else:
+            await callback.message.delete()
+    except Exception as e:
+        logging.error(f"Error deleting message: {e}")
+        # Message ဖျက်မရသော အခြေအနေများ (ဥပမာ 48 နာရီထက်ကျော်ခြင်း) တွင် စာသားပြောင်းလဲပေးမည်
+        await safe_edit(callback, "❌ ကစားပွဲကို ပိတ်လိုက်ပါပြီ။", None)
 
 @dp.callback_query(F.data == "play_ai")
 async def start_ai_game(callback: types.CallbackQuery):
@@ -465,7 +513,6 @@ async def start_pvp_game(callback: types.CallbackQuery):
     game = games[game_id]
     text = get_turn_text(game)
     
-    # သူငယ်ချင်း ဝင်Join ရန်၊ ပွဲဖျက်ရန်နှင့် DM ထဲ Share ဖိတ်ခေါ်ရန် ခလုတ်များ (Indent ညှိပြီးသား)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎮 Join Game (ဝင်ကစားမည်)", callback_data=f"join_{game_id}")],
         [InlineKeyboardButton(text="❌ ပွဲပယ်ဖျက်မည်", callback_data=f"end_{game_id}")],
@@ -690,7 +737,9 @@ async def move_callback(callback: types.CallbackQuery):
                 await db_update_stats(loser["id"], "loss")
                 
             text = f"🏆 **ဂုဏ်ယူပါတယ်! ပွဲပြီးဆုံးသွားပါပြီ!**\n\n👤 {escape_md(winner['name'])} မှ အနိုင်ရရှိသွားပါသည်။"
-            keyboard = create_board_keyboard(board, game_id, game["theme"], game)
+            
+            # ဂိမ်းပြီးဆုံးသွားသည့်အတွက် is_game_over=True ဖြင့် Keyboard ကို ထုတ်ယူပါသည်
+            keyboard = create_board_keyboard(board, game_id, game["theme"], game, is_game_over=True)
             await safe_edit(callback, text, keyboard)
             del games[game_id]
             return
@@ -702,7 +751,9 @@ async def move_callback(callback: types.CallbackQuery):
                 await db_update_stats(game["opponent"]["id"], "draw")
                 
             text = f"🤝 **သရေကျသွားပါသည်!**\n\nနောက်တစ်ပွဲ ပြန်ကြိုးစားကြည့်ပါ။"
-            keyboard = create_board_keyboard(board, game_id, game["theme"], game)
+            
+            # ဂိမ်းပြီးဆုံးသွားသည့်အတွက် is_game_over=True ဖြင့် Keyboard ကို ထုတ်ယူပါသည်
+            keyboard = create_board_keyboard(board, game_id, game["theme"], game, is_game_over=True)
             await safe_edit(callback, text, keyboard)
             del games[game_id]
             return
@@ -734,7 +785,9 @@ async def move_callback(callback: types.CallbackQuery):
             if check_winner(board, game["opponent"]["piece"]):
                 await db_update_stats(game["creator"]["id"], "loss")
                 text = f"💀 **ရှုံးသွားပါပြီ!**\n\n🤖 AI Bot မှ အနိုင်ရရှိသွားပါသည်။"
-                keyboard = create_board_keyboard(board, game_id, game["theme"], game)
+                
+                # ဂိမ်းပြီးဆုံးသွားသည့်အတွက် is_game_over=True ဖြင့် Keyboard ကို ထုတ်ယူပါသည်
+                keyboard = create_board_keyboard(board, game_id, game["theme"], game, is_game_over=True)
                 await safe_edit(callback, text, keyboard)
                 del games[game_id]
                 return
@@ -742,7 +795,9 @@ async def move_callback(callback: types.CallbackQuery):
             if check_draw(board):
                 await db_update_stats(game["creator"]["id"], "draw")
                 text = f"🤝 **သရေကျသွားပါသည်!**\n\nနောက်တစ်ပွဲ ပြန်ကြိုးစားကြည့်ပါ။"
-                keyboard = create_board_keyboard(board, game_id, game["theme"], game)
+                
+                # ဂိမ်းပြီးဆုံးသွားသည့်အတွက် is_game_over=True ဖြင့် Keyboard ကို ထုတ်ယူပါသည်
+                keyboard = create_board_keyboard(board, game_id, game["theme"], game, is_game_over=True)
                 await safe_edit(callback, text, keyboard)
                 del games[game_id]
                 return
