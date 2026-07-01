@@ -18,7 +18,10 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     InlineQueryResultArticle,
-    InputTextMessageContent
+    InputTextMessageContent,
+    BotCommand,
+    BotCommandScopeDefault,
+    BotCommandScopeChat
 )
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 
@@ -733,6 +736,27 @@ async def register_group_and_channel(message: types.Message):
     chat_type = message.chat.type
     await db.register_group(chat_id, title, chat_type)
 
+@dp.my_chat_member()
+async def on_bot_membership_change(event: types.ChatMemberUpdated):
+    """
+    Fires the instant the bot's own membership status changes in a chat
+    (added to a group/channel, promoted, kicked, etc). Unlike the message
+    handler above, this event reaches the bot regardless of Privacy Mode,
+    so groups/channels get registered immediately on add instead of waiting
+    for someone to send the first message.
+    """
+    chat = event.chat
+    new_status = event.new_chat_member.status
+    if chat.type not in ("group", "supergroup", "channel"):
+        return
+
+    if new_status in ("member", "administrator"):
+        await db.register_group(str(chat.id), chat.title or "Unknown", chat.type)
+        logging.info(f"Bot added to {chat.type} '{chat.title}' ({chat.id}) — registered.")
+    elif new_status in ("left", "kicked"):
+        logging.info(f"Bot removed from {chat.type} '{chat.title}' ({chat.id}).")
+
+
 @dp.message(Command("leaderboard"))
 @cooldown(2.0)
 async def cmd_leaderboard(message: types.Message):
@@ -741,6 +765,39 @@ async def cmd_leaderboard(message: types.Message):
     for i, (name, wins) in enumerate(data, 1):
         text += f"{i}. {escape_md(name)} - {wins} wins\n"
     await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("help"))
+@cooldown(2.0)
+async def cmd_help(message: types.Message):
+    is_admin = message.from_user.id in ADMIN_IDS
+
+    text = (
+        "📖 **Bot သုံးနည်း — Command List**\n\n"
+        "🎮 **အဓိက Command များ**\n"
+        "/start — Main Menu ဖွင့်ရန် (AI/PvP ရွေးရန်)\n"
+        "/leaderboard — Top 5 ကစားသမား စာရင်း\n"
+        "/help — ဒီ command list ကို ပြန်ကြည့်ရန်\n\n"
+        "🕹 **ဂိမ်းကစားနည်း**\n"
+        "• 🎮 Play with AI — Difficulty (Easy / Medium / Hard) ရွေးပြီး AI နှင့်ကစားနိုင်ပါသည်\n"
+        "• 👥 Play with Friend — သူငယ်ချင်းနှင့် PvP ဂိမ်းဖန်တီးပြီး 'Join Game' ဖြင့်ဝင်ကစားနိုင်ပါသည်\n"
+        "• 👤 My Profile — နိုင်/ရှုံး/သရေ/ဒင်္ဂါးပြား စသည့် မှတ်တမ်းများ ကြည့်ရှုနိုင်ပါသည်\n"
+        "• ↩️ Undo — ဒင်္ဂါးပြား 50 ဖြင့် လှုပ်ရှားမှု နောက်ဆုတ်နိုင်ပါသည်\n"
+        "• 🏳️ Leave Game — ကစားနေသော ဂိမ်းမှ အရှုံးပေး ထွက်ခွာနိုင်ပါသည်\n"
+        "• Inline Mode — Chat မည်သည့်နေရာမဆို Bot Username ကို @ ခေါ်ပြီး `play` ရိုက်လျှင် သူငယ်ချင်းကို တိုက်ရိုက်ဖိတ်ခေါ်နိုင်ပါသည်\n"
+    )
+
+    if is_admin:
+        text += (
+            "\n🛠 **Admin Command များ (Admin သာ သုံးနိုင်)**\n"
+            "/broadcast — Reply ပြန်ထားသော message ကို Chat/Group အားလုံးသို့ ပို့ရန်\n"
+            "/broadcast_status — လက်ရှိ Broadcast ၏ progress (sent/failed) ကြည့်ရန်\n"
+            "/broadcast_cancel — လုပ်ဆောင်ဆဲ Broadcast ကို ရပ်တန့်ရန်\n"
+        )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Main Menu", callback_data="back_to_menu")]
+    ])
+    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.message(Command("broadcast"))
 @cooldown(5.0)
@@ -1179,6 +1236,33 @@ async def move_callback(callback: types.CallbackQuery):
         await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"], game))
 
 # ==========================================
+#      TELEGRAM NATIVE COMMAND MENU (/)
+# ==========================================
+PUBLIC_COMMANDS: List[BotCommand] = [
+    BotCommand(command="start", description="ဂိမ်း Main Menu ဖွင့်ရန်"),
+    BotCommand(command="help", description="Command များ အကူအညီ"),
+    BotCommand(command="leaderboard", description="Top 5 ကစားသမား စာရင်း"),
+]
+
+ADMIN_COMMANDS: List[BotCommand] = PUBLIC_COMMANDS + [
+    BotCommand(command="broadcast", description="[Admin] Chat/Group အားလုံးသို့ စာပို့ရန်"),
+    BotCommand(command="broadcast_status", description="[Admin] Broadcast progress ကြည့်ရန်"),
+    BotCommand(command="broadcast_cancel", description="[Admin] Broadcast ပယ်ဖျက်ရန်"),
+]
+
+async def setup_bot_commands() -> None:
+    """Registers the '/' command menu shown by Telegram clients."""
+    try:
+        await bot.set_my_commands(PUBLIC_COMMANDS, scope=BotCommandScopeDefault())
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.set_my_commands(ADMIN_COMMANDS, scope=BotCommandScopeChat(chat_id=admin_id))
+            except Exception as e:
+                logging.warning(f"Could not set admin command menu for {admin_id}: {e}")
+    except Exception as e:
+        logging.error(f"Failed to set bot command menu: {e}")
+
+# ==========================================
 #            MAIN EXECUTION
 # ==========================================
 async def main():
@@ -1189,6 +1273,9 @@ async def main():
 
     # Broadcast queue background worker
     broadcast_manager.start_worker()
+
+    # "/" ကိုနှိပ်ရင် ပေါ်လာမည့် command menu ကို register လုပ်ခြင်း
+    await setup_bot_commands()
     
     logging.info("Bot is starting successfully...")
     await dp.start_polling(bot)
