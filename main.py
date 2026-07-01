@@ -183,7 +183,6 @@ class DatabaseManager:
     async def get_all_chats(self) -> List[str]:
         try:
             conn = await self.connect()
-            # Optimized with UNION to naturally distinct and process faster
             async with conn.execute("SELECT user_id FROM users UNION SELECT chat_id FROM groups") as cursor:
                 return [row[0] async for row in cursor]
         except Exception as e:
@@ -665,7 +664,7 @@ async def cmd_public_commands(message: types.Message):
             "• 👤 My Profile — နိုင်/ရှုံး/သရေ/ဒင်္ဂါးပြား စသည့် မှတ်တမ်းများ ကြည့်ရှုနိုင်ပါသည်\n"
             "• ↩️ Undo — ဒင်္ဂါးပြား 50 ဖြင့် လှုပ်ရှားမှု နောက်ဆုတ်နိုင်ပါသည်\n"
             "• 🏳️ Leave Game — ကစားနေသော ဂိမ်းမှ အရှုံးပေး ထွက်ခွာနိုင်ပါသည်\n"
-            "• Inline Mode — Chat မည်သည့်နေရာမဆို Bot Username ကို @ ခေါ်ပြီး `play` (သို့) `play O` ရိုက်လျှင် သူငယ်ချင်းကို တိုက်ရိုက်ဖိတ်ခေါ်နိုင်ပါသည်\n"
+            "• Inline Mode — Chat မည်သည့်နေရာမဆို Bot Username ကို @ ခေါ်ပြီး `play` ရိုက်ပါက X နှင့် O ရွေးချယ်နိုင်သော Menu ပေါ်လာပြီး သူငယ်ချင်းကို တိုက်ရိုက်ဖိတ်ခေါ်နိုင်ပါသည်\n"
         )
         if is_admin:
             text += (
@@ -815,6 +814,29 @@ async def close_message_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("play_pvp") | F.data.startswith("play_ai"))
 async def start_game(callback: types.CallbackQuery):
+    # Backward compatibility: Redirect any old button without _X or _O exactly to the menu screens.
+    if callback.data == "play_pvp":
+        text = "👥 **သူငယ်ချင်းနှင့် ကစားရန် Symbol ရွေးပါ**\n\n*(X သည် အမြဲတမ်း ပထမဆုံး စတင်ရမည်)*"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Play as X", callback_data="play_pvp_X"),
+             InlineKeyboardButton(text="⭕ Play as O", callback_data="play_pvp_O")],
+            [InlineKeyboardButton(text="🔙 နောက်သို့", callback_data="back_to_menu")]
+        ])
+        return await safe_edit(callback, text, keyboard)
+        
+    if callback.data == "play_ai":
+        text = "🤖 **AI နှင့် ကစားရန် Difficulty နှင့် Symbol ရွေးပါ**\n\n*(X သည် အမြဲတမ်း ပထမဆုံး စတင်ရမည်)*"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="😌 Easy (Play X)", callback_data="play_ai_easy_X"),
+             InlineKeyboardButton(text="😌 Easy (Play O)", callback_data="play_ai_easy_O")],
+            [InlineKeyboardButton(text="⚖️ Medium (Play X)", callback_data="play_ai_medium_X"),
+             InlineKeyboardButton(text="⚖️ Medium (Play O)", callback_data="play_ai_medium_O")],
+            [InlineKeyboardButton(text="🔥 Hard (Play X)", callback_data="play_ai_hard_X"),
+             InlineKeyboardButton(text="🔥 Hard (Play O)", callback_data="play_ai_hard_O")],
+            [InlineKeyboardButton(text="🔙 နောက်သို့", callback_data="back_to_menu")]
+        ])
+        return await safe_edit(callback, text, keyboard)
+
     game_id = secrets.token_hex(4)
     board = [['' for _ in range(4)] for _ in range(4)]
     
@@ -953,37 +975,41 @@ async def end_game_callback(callback: types.CallbackQuery):
 async def inline_game_handler(inline_query: types.InlineQuery):
     user_id = inline_query.from_user.id
     first_name = inline_query.from_user.first_name
-    game_id = secrets.token_hex(4)
     
-    query = inline_query.query.strip().upper()
-    piece = "O" if "O" in query else "X"
-    op_piece = "X" if piece == "O" else "O"
-    
-    board = [['' for _ in range(4)] for _ in range(4)]
+    results = []
     lock = await gm.get_lock()
+    
+    # Inline mode ကိုရှာဖွေလိုက်သည်နှင့် X အဖြစ်ကစားရန်နှင့် O အဖြစ်ကစားရန် ရွေးချယ်မှု (၂) ခုကို တန်းစီပြပေးမည်
     async with lock:
-        gm.create_game(game_id, {
-            "board": board, "turn": "X", "theme": {"X": "❌", "O": "⭕"},
-            "creator": {"id": user_id, "name": first_name, "piece": piece},
-            "opponent": {"id": -1, "name": "Waiting...", "piece": op_piece},
-            "status": "waiting", "moves": []
-        })
-    
-    text = (
-        f"⚔️ **Tic-Tac-Toe 4x4 (DM Mode)** ⚔️\n\n"
-        f"👤 ဖန်တီးသူ: {escape_md(first_name)} ({ '❌' if piece == 'X' else '⭕' })\n"
-        f"⏳ ကစားဖော်အား စောင့်ဆိုင်းနေပါသည်...\n\n"
-        f"ချက်တင်ထဲက သူငယ်ချင်းသည် အောက်ပါ 'Join Game' ကိုနှိပ်ပြီး တိုက်ရိုက်ဝင်ဆော့နိုင်ပါပြီ။"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎮 Join Game (ဝင်ကစားမည်)", callback_data=f"join_{game_id}")]])
-    result = InlineQueryResultArticle(
-        id=game_id, title="👥 Play 4x4 Tic-Tac-Toe Here (သူငယ်ချင်းနှင့် ဆော့မည်)",
-        description="ဒီနေရာကိုနှိပ်ပြီး DM Chat / Group ထဲတွင် တိုက်ရိုက်ခေါ်ဆော့ပါ",
-        input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown"),
-        reply_markup=keyboard
-    )
-    await inline_query.answer([result], cache_time=1, is_personal=True)
+        for piece in ["X", "O"]:
+            game_id = secrets.token_hex(4)
+            op_piece = "O" if piece == "X" else "X"
+            board = [['' for _ in range(4)] for _ in range(4)]
+            
+            gm.create_game(game_id, {
+                "board": board, "turn": "X", "theme": {"X": "❌", "O": "⭕"},
+                "creator": {"id": user_id, "name": first_name, "piece": piece},
+                "opponent": {"id": -1, "name": "Waiting...", "piece": op_piece},
+                "status": "waiting", "moves": []
+            })
+        
+            text = (
+                f"⚔️ **Tic-Tac-Toe 4x4 (DM Mode)** ⚔️\n\n"
+                f"👤 ဖန်တီးသူ: {escape_md(first_name)} ({ '❌' if piece == 'X' else '⭕' })\n"
+                f"⏳ ကစားဖော်အား စောင့်ဆိုင်းနေပါသည်...\n\n"
+                f"ချက်တင်ထဲက သူငယ်ချင်းသည် အောက်ပါ 'Join Game' ကိုနှိပ်ပြီး တိုက်ရိုက်ဝင်ဆော့နိုင်ပါပြီ။"
+            )
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎮 Join Game (ဝင်ကစားမည်)", callback_data=f"join_{game_id}")]])
+            results.append(InlineQueryResultArticle(
+                id=f"{game_id}_{piece}", 
+                title=f"👥 Play 4x4 (Play as {piece})",
+                description=f"သင်သည် {piece} အဖြစ်ကစားမည်။",
+                input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown"),
+                reply_markup=keyboard
+            ))
+            
+    await inline_query.answer(results, cache_time=1, is_personal=True)
 
 @dp.callback_query(F.data.startswith("move_"))
 async def move_callback(callback: types.CallbackQuery):
