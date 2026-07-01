@@ -465,12 +465,15 @@ async def start_pvp_game(callback: types.CallbackQuery):
     game = games[game_id]
     text = get_turn_text(game)
     
-    # သူငယ်ချင်း ဝင်Join ရန်ခလုတ်
+    # သူငယ်ချင်း ဝင်Join ရန်၊ ပွဲဖျက်ရန်နှင့် DM ထဲ Share ဖိတ်ခေါ်ရန် ခလုတ်များ (Indent ညှိပြီးသား)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎮 Join Game (ဝင်ကစားမည်)", callback_data=f"join_{game_id}")]
+        [InlineKeyboardButton(text="🎮 Join Game (ဝင်ကစားမည်)", callback_data=f"join_{game_id}")],
+        [InlineKeyboardButton(text="❌ ပွဲပယ်ဖျက်မည်", callback_data=f"end_{game_id}")],
+        [InlineKeyboardButton(text="🔗 Share to Friend (DM တွင်သူငယ်ချင်းကိုဖိတ်ရန်)", switch_inline_query="play")]
     ])
     
     await safe_edit(callback, text, keyboard)
+
 
 @dp.callback_query(F.data.startswith("join_"))
 async def join_pvp_game(callback: types.CallbackQuery):
@@ -518,7 +521,6 @@ async def leave_game(callback: types.CallbackQuery):
 # --- Undo Handler ---
 @dp.callback_query(F.data.startswith("undo_"))
 async def undo_move(callback: types.CallbackQuery):
-    # "undo_GAME_ID" → ["undo", "GAME_ID"] (game_id မှာ _ ပါလည်း အားလုံးပါမယ်)
     _, game_id = callback.data.split("_", 1)   # maxsplit=1
     user_id = callback.from_user.id
 
@@ -575,10 +577,70 @@ async def undo_move(callback: types.CallbackQuery):
     await safe_edit(callback, text, keyboard)
     await callback.answer(f"✅ သင်နှင့် ပြိုင်ဘက်၏ လှုပ်ရှားမှုကို နောက်ဆုတ်လိုက်ပါပြီ။ (50 coins ကုန်ဆုံး)", show_alert=False)
 
+
+# ==========================================
+#      ပွဲပယ်ဖျက်ခြင်း နှင့် INLINE DM FEATURE HANDLERS
+# ==========================================
+
+# --- Button ဖြင့် ဂိမ်းပယ်ဖျက်ခြင်း Handler ---
+@dp.callback_query(F.data.startswith("end_"))
+async def end_game_callback(callback: types.CallbackQuery):
+    _, game_id = callback.data.split("_")
+    user_id = callback.from_user.id
+    
+    async with game_lock:
+        if game_id in games and games[game_id]["creator"]["id"] == user_id and games[game_id]["status"] == "waiting":
+            del games[game_id]
+            await callback.answer("✅ ပွဲကို အောင်မြင်စွာ ပယ်ဖျက်လိုက်ပါပြီ။", show_alert=True)
+            await safe_edit(callback, "❌ ပွဲကို ဖျက်လိုက်ပါပြီ။", None)
+        else:
+            await callback.answer("⚠️ ပွဲကို ဖျက်၍မရပါ (သို့) သင်သည် ပွဲဖန်တီးသူ မဟုတ်ပါ။", show_alert=True)
+
+
+# --- TELEGRAM INLINE QUERY HANDLER (DM ထဲတွင် တိုက်ရိုက်ခေါ်ဆော့ရန် စနစ်) ---
+@dp.inline_query()
+async def inline_game_handler(inline_query: types.InlineQuery):
+    user_id = inline_query.from_user.id
+    first_name = inline_query.from_user.first_name
+    game_id = secrets.token_hex(4)  # ကုဒ်မမှားစေရန် plain hex သုံးထားပါသည်
+    
+    board = [['' for _ in range(4)] for _ in range(4)]
+    async with game_lock:
+        games[game_id] = {
+            "board": board,
+            "turn": "X",
+            "theme": {"X": "❌", "O": "⭕"},
+            "creator": {"id": user_id, "name": first_name, "piece": "X"},
+            "opponent": {"id": -1, "name": "Waiting...", "piece": "O"},
+            "status": "waiting",
+            "moves": []
+        }
+    
+    text = (
+        f"⚔️ **Tic-Tac-Toe 4x4 (DM Mode)** ⚔️\n\n"
+        f"👤 ဖန်တီးသူ: {escape_md(first_name)} (❌)\n"
+        f"⏳ ကစားဖော်အား စောင့်ဆိုင်းနေပါသည်...\n\n"
+        f"ချက်တင်ထဲက သူငယ်ချင်းသည် အောက်ပါ 'Join Game' ကိုနှိပ်ပြီး တိုက်ရိုက်ဝင်ဆော့နိုင်ပါပြီ။"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎮 Join Game (ဝင်ကစားမည်)", callback_data=f"join_{game_id}")]
+    ])
+    
+    result = InlineQueryResultArticle(
+        id=game_id,
+        title="👥 Play 4x4 Tic-Tac-Toe Here (သူငယ်ချင်းနှင့် ဆော့မည်)",
+        description="ဒီနေရာကိုနှိပ်ပြီး DM Chat / Group ထဲတွင် တိုက်ရိုက်ခေါ်ဆော့ပါ",
+        input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown"),
+        reply_markup=keyboard
+    )
+    
+    await inline_query.answer([result], cache_time=1, is_personal=True)
+
+
 # ==========================================
 #            GAME MOVE HANDLER
 # ==========================================
-
 @dp.callback_query(F.data.startswith("move_"))
 async def move_callback(callback: types.CallbackQuery):
     _, game_id, r, c = callback.data.split("_")
@@ -654,13 +716,10 @@ async def move_callback(callback: types.CallbackQuery):
     
     # --- Phase 2: AI move (outside lock) ---
     if ai_mode:
-        # Update board UI for player's move
         await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"], game))
         await asyncio.sleep(0.5) # AI thinking delay
         
-        # Lock again to perform AI move
         async with game_lock:
-            # Re-check game existence and status
             if game_id not in games:
                 return
             game = games[game_id]
@@ -688,10 +747,9 @@ async def move_callback(callback: types.CallbackQuery):
                 del games[game_id]
                 return
                 
-            game["turn"] = game["creator"]["piece"] # လူအလှည့် ပြန်ပေး
+            game["turn"] = game["creator"]["piece"]
             await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"], game))
     else:
-        # PvP Mode: just update board for next player
         await safe_edit(callback, get_turn_text(game), create_board_keyboard(board, game_id, game["theme"], game))
 
 # ==========================================
