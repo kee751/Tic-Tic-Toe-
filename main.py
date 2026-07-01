@@ -236,21 +236,32 @@ def get_turn_text(game: Dict[str, Any]) -> str:
         f"▶️ **အလှည့်:** {escape_md(current_player_name)} ({c_theme})"
     )
 
-def create_board_keyboard(board: list, game_id: str, theme: Dict[str, str], game: Dict[str, Any]) -> InlineKeyboardMarkup:
+def create_board_keyboard(board: list, game_id: str, theme: Dict[str, str], game: Dict[str, Any], is_game_over: bool = False) -> InlineKeyboardMarkup:
     keyboard = []
-    for r in range(4):
+    rows = len(board)
+    cols = len(board[0]) if rows > 0 else 0
+    for r in range(rows):
         row = []
-        for c in range(4):
+        for c in range(cols):
             symbol = board[r][c]
-            display_text = theme[symbol] if symbol != '' else "➖"
+            # theme ထဲမှာ မရှိရင် symbol ကိုပဲ ပြမယ်
+            display_text = theme.get(symbol, symbol) if symbol != '' else "➖"
             row.append(InlineKeyboardButton(text=display_text, callback_data=f"move_{game_id}_{r}_{c}"))
         keyboard.append(row)
-    
-    # Add Undo button if game is playing and there are moves
-    if game["status"] == "playing" and len(game.get("moves", [])) > 0:
-        keyboard.append([InlineKeyboardButton(text="↩️ Undo (50 coins)", callback_data=f"undo_{game_id}")])
-    
-    keyboard.append([InlineKeyboardButton(text="🏳️ Leave Game (အရှုံးပေးရန်)", callback_data=f"leave_{game_id}")])
+
+    if not is_game_over:
+        # undo ကို move ၂ ခုရှိမှပဲ ပြမယ်
+        if game.get("status") == "playing" and len(game.get("moves", [])) >= 2:
+            keyboard.append([InlineKeyboardButton(text="↩️ Undo (50 coins)", callback_data=f"undo_{game_id}")])
+        # leave ကိုလည်း playing ဖြစ်မှပြမယ်
+        if game.get("status") == "playing":
+            keyboard.append([InlineKeyboardButton(text="🏳️ Leave Game (အရှုံးပေးရန်)", callback_data=f"leave_{game_id}")])
+    else:
+        if game["opponent"]["id"] == 0:
+            keyboard.append([InlineKeyboardButton(text="🔄 ထပ်ကစားမည် (AI နှင့်)", callback_data="play_ai")])
+        else:
+            keyboard.append([InlineKeyboardButton(text="🔄 ထပ်ကစားမည် (သူငယ်ချင်းနှင့်)", callback_data="play_pvp")])
+
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def check_winner(board: list, player: str) -> bool:
@@ -352,39 +363,41 @@ async def cmd_leaderboard(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 # --- Broadcast Command (Admin Only) ---
+# --- Broadcast Command (Admin Only) ---
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.reply("ဤ command ကို Admin သာ အသုံးပြုနိုင်ပါသည်။")
         return
         
-    broadcast_msg = message.text.replace("/broadcast", "").strip()
-    if not broadcast_msg:
-        await message.reply("ကျေးဇူးပြု၍ ပို့လိုသော စာသားကို ရိုက်ထည့်ပါ။\nဥပမာ - `/broadcast မင်္ဂလာပါ အားလုံးပဲ`", parse_mode="Markdown")
+    # Reply ပြန်ပြီးမှ Broadcast လုပ်ခိုင်းမည့်စနစ် (ပုံ၊ ဗီဒီယိုပါ ပို့နိုင်ရန်)
+    if not message.reply_to_message:
+        await message.reply("⚠️ ကျေးဇူးပြု၍ သင် Broadcast လုပ်လိုသော စာ၊ ပုံ (သို့) ဗီဒီယိုကို **Reply** ပြန်ပြီး `/broadcast` ဟု ရိုက်ပါ။", parse_mode="Markdown")
         return
 
-    chats = await db_get_all_chats()   # User + Group IDs
+    # မူလကုဒ်တွင် ရှိပြီးသား Database Function ကို အသုံးပြုခြင်း
+    chats = await db_get_all_chats()   
     success_count = 0
     fail_count = 0
     
-    await message.reply(f"🚀 Chat အယောက် ({len(chats)}) ဆီသို့ Broadcast စတင်ပို့ဆောင်နေပါပြီ...")
+    await message.reply(f"🚀 Chat အရေအတွက် ({len(chats)}) ဆီသို့ Broadcast စတင်ပို့ဆောင်နေပါပြီ...")
 
     for chat_id in chats:
         try:
-            await bot.send_message(
+            # စာသားသာမက Media များကိုပါ Copy ကူး၍ ပို့ဆောင်ပေးမည်
+            await bot.copy_message(
                 chat_id=int(chat_id),
-                text=f"📢 **Admin Message:**\n\n{escape_md(broadcast_msg)}",
-                parse_mode="Markdown"
+                from_chat_id=message.chat.id,
+                message_id=message.reply_to_message.message_id
             )
             success_count += 1
             await asyncio.sleep(0.05)  # Rate limit ကာကွယ်ရန်
-        except TelegramAPIError:
-            fail_count += 1
         except Exception as e:
             logging.error(f"Broadcast error to {chat_id}: {e}")
             fail_count += 1
             
-    await message.reply(f"✅ **Broadcast ပြီးဆုံးပါပြီ။**\n\nအောင်မြင်: {success_count} ခု\nမအောင်မြင်: {fail_count} ခု (Bot ကို block ထားသူများ သို့မဟုတ် Group မှ ဖယ်ရှားထားသူများ)")
+    await message.reply(f"✅ **Broadcast ပြီးဆုံးပါပြီ။**\n\nအောင်မြင်: {success_count} ခု\nမအောင်မြင်: {fail_count} ခု (Bot ကို block ထားသူများ သို့မဟုတ် Group မှ ဖယ်ရှားခံရမှုများ)")
+
 
 # ==========================================
 #            CALLBACK HANDLERS
@@ -505,47 +518,62 @@ async def leave_game(callback: types.CallbackQuery):
 # --- Undo Handler ---
 @dp.callback_query(F.data.startswith("undo_"))
 async def undo_move(callback: types.CallbackQuery):
-    _, game_id = callback.data.split("_")
+    # "undo_GAME_ID" → ["undo", "GAME_ID"] (game_id မှာ _ ပါလည်း အားလုံးပါမယ်)
+    _, game_id = callback.data.split("_", 1)   # maxsplit=1
     user_id = callback.from_user.id
-    
-    # Get game and check conditions
+
     async with game_lock:
         if game_id not in games:
             await callback.answer("ဂိမ်းမရှိတော့ပါ။", show_alert=True)
             return
-        
+
         game = games[game_id]
         if game["status"] != "playing":
             await callback.answer("ဂိမ်းက ကစားနေဆဲမဟုတ်ပါ။", show_alert=True)
             return
-        
+
         moves = game.get("moves", [])
-        if not moves:
-            await callback.answer("ပြန်ဆုတ်ရန် လှုပ်ရှားမှုမရှိပါ။", show_alert=True)
+        if len(moves) < 2:
+            await callback.answer("နောက်ပြန်ဆုတ်ရန် လုံလောက်သော လှုပ်ရှားမှုမရှိသေးပါ။", show_alert=True)
             return
-        
-        # Check if user has enough coins
+
+        my_piece = game["creator"]["piece"] if game["creator"]["id"] == user_id else game["opponent"]["piece"]
+
+        # မိမိအလှည့်မှသာ undo ခွင့်ပြုရန်
+        if game["turn"] != my_piece:
+            await callback.answer("သင်အလှည့်မဟုတ်သေးပါ။", show_alert=True)
+            return
+
+        # နောက်ဆုံး ၂ ခု၏ ပိုင်ရှင်စစ်ဆေးခြင်း
+        last_move_1 = moves[-1]
+        last_move_2 = moves[-2]
+        if last_move_1[0] == my_piece or last_move_2[0] != my_piece:
+            await callback.answer("လှုပ်ရှားမှု အချက်အလက် မကိုက်ညီပါ။", show_alert=True)
+            return
+
+        # ဒင်္ဂါးပြား စစ်ဆေးခြင်း
         profile = await db_get_profile(user_id)
         if not profile or profile["coins"] < 50:
             await callback.answer("သင့်တွင် ဒင်္ဂါးပြား 50 မရှိပါ။", show_alert=True)
             return
-        
-        # Deduct coins first (to prevent double spending)
+
         await db_update_coins(user_id, -50)
-        
-        # Undo the last move: pop from moves, clear board cell, set turn to that player
-        last_move = moves.pop()
-        player_symbol, r, c = last_move
-        game["board"][r][c] = ''
-        game["turn"] = player_symbol
-        
-        # Update keyboard and text
+
+        # undo လုပ်ဆောင်ခြင်း
+        moves.pop()  # ပြိုင်ဘက်၏ move
+        moves.pop()  # မိမိ၏ move
+        _, r1, c1 = last_move_1
+        _, r2, c2 = last_move_2
+        game["board"][r1][c1] = ''
+        game["board"][r2][c2] = ''
+
+        game["turn"] = my_piece
+
         text = get_turn_text(game)
         keyboard = create_board_keyboard(game["board"], game_id, game["theme"], game)
-        
-    # Update UI (outside lock)
+
     await safe_edit(callback, text, keyboard)
-    await callback.answer(f"✅ နောက်တစ်လှည့် ပြန်ဆုတ်ပြီးပါပြီ။ (50 coins ကုန်သွားပါပြီ)", show_alert=False)
+    await callback.answer(f"✅ သင်နှင့် ပြိုင်ဘက်၏ လှုပ်ရှားမှုကို နောက်ဆုတ်လိုက်ပါပြီ။ (50 coins ကုန်ဆုံး)", show_alert=False)
 
 # ==========================================
 #            GAME MOVE HANDLER
